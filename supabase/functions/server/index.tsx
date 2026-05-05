@@ -21,17 +21,19 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') || '';
 
+if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ANON_KEY) {
+  throw new Error('Missing one or more required Supabase environment variables.');
+}
+
 const STORAGE_BUCKET = 'make-9a7b4805-images';
 
-// 🔹 Reusable clients
 const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 const anonClient = createClient(SUPABASE_URL, ANON_KEY);
 
-// 🔹 Init storage (non-blocking)
 (async () => {
   try {
     const { data: buckets } = await adminClient.storage.listBuckets();
-    const exists = buckets?.some(b => b.name === STORAGE_BUCKET);
+    const exists = buckets?.some((b) => b.name === STORAGE_BUCKET);
 
     if (!exists) {
       await adminClient.storage.createBucket(STORAGE_BUCKET, { public: false });
@@ -42,7 +44,6 @@ const anonClient = createClient(SUPABASE_URL, ANON_KEY);
   }
 })();
 
-// 🔹 Auth helper
 const getAuthenticatedUser = async (authHeader?: string) => {
   try {
     if (!authHeader?.startsWith("Bearer ")) return null;
@@ -59,12 +60,10 @@ const getAuthenticatedUser = async (authHeader?: string) => {
   }
 };
 
-// 🔹 Health
 app.get("/make-server-9a7b4805/health", (c) => {
   return c.json({ status: "ok" });
 });
 
-// 🔹 Signup
 app.post("/make-server-9a7b4805/signup", async (c) => {
   try {
     const { email, password, name } = await c.req.json();
@@ -80,8 +79,8 @@ app.post("/make-server-9a7b4805/signup", async (c) => {
       email_confirm: true,
     });
 
-    if (error) {
-      return c.json({ error: error.message }, 400);
+    if (error || !data.user) {
+      return c.json({ error: error?.message || 'Failed to create user' }, 400);
     }
 
     return c.json({
@@ -96,7 +95,6 @@ app.post("/make-server-9a7b4805/signup", async (c) => {
   }
 });
 
-// 🔹 Login
 app.post("/make-server-9a7b4805/login", async (c) => {
   try {
     const { email, password } = await c.req.json();
@@ -110,8 +108,8 @@ app.post("/make-server-9a7b4805/login", async (c) => {
       password,
     });
 
-    if (error) {
-      return c.json({ error: error.message }, 401);
+    if (error || !data.user || !data.session) {
+      return c.json({ error: error?.message || 'Invalid login response' }, 401);
     }
 
     return c.json({
@@ -127,7 +125,6 @@ app.post("/make-server-9a7b4805/login", async (c) => {
   }
 });
 
-// 🔹 Upload image
 app.post("/make-server-9a7b4805/upload-image", async (c) => {
   const user = await getAuthenticatedUser(c.req.header("Authorization"));
   if (!user) return c.json({ error: "Unauthorized" }, 401);
@@ -140,7 +137,7 @@ app.post("/make-server-9a7b4805/upload-image", async (c) => {
       return c.json({ error: "No file provided" }, 400);
     }
 
-    const fileExt = file.name.split(".").pop();
+    const fileExt = file.name.split(".").pop() || 'bin';
     const fileName = `${user.id}/${Date.now()}.${fileExt}`;
     const buffer = await file.arrayBuffer();
 
@@ -164,66 +161,78 @@ app.post("/make-server-9a7b4805/upload-image", async (c) => {
   }
 });
 
-// 🔹 Articles (GET)
 app.get("/make-server-9a7b4805/articles", async (c) => {
   const user = await getAuthenticatedUser(c.req.header("Authorization"));
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const articles = await kv.getByPrefix(`articles:${user.id}:`);
-  return c.json({ articles });
+  try {
+    const articles = await kv.getByPrefix(`articles:${user.id}:`);
+    return c.json({ articles });
+  } catch {
+    return c.json({ error: 'Could not fetch articles' }, 500);
+  }
 });
 
-// 🔹 Create article
 app.post("/make-server-9a7b4805/articles", async (c) => {
   const user = await getAuthenticatedUser(c.req.header("Authorization"));
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const article = await c.req.json();
-  const id = Date.now().toString();
+  try {
+    const article = await c.req.json();
+    const id = Date.now().toString();
 
-  const full = {
-    ...article,
-    id,
-    userId: user.id,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    collaborators: [user.id],
-    comments: [],
-  };
+    const full = {
+      ...article,
+      id,
+      userId: user.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      collaborators: [user.id],
+      comments: [],
+    };
 
-  await kv.set(`articles:${user.id}:${id}`, full);
-  return c.json({ article: full });
+    await kv.set(`articles:${user.id}:${id}`, full);
+    return c.json({ article: full });
+  } catch {
+    return c.json({ error: 'Could not create article' }, 500);
+  }
 });
 
-// 🔹 Update article
 app.put("/make-server-9a7b4805/articles/:id", async (c) => {
   const user = await getAuthenticatedUser(c.req.header("Authorization"));
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const id = c.req.param("id");
-  const updates = await c.req.json();
+  try {
+    const id = c.req.param("id");
+    const updates = await c.req.json();
 
-  const existing = await kv.get(`articles:${user.id}:${id}`);
-  if (!existing) return c.json({ error: "Not found" }, 404);
+    const existing = await kv.get(`articles:${user.id}:${id}`);
+    if (!existing) return c.json({ error: "Not found" }, 404);
 
-  const updated = {
-    ...existing,
-    ...updates,
-    updatedAt: new Date().toISOString(),
-  };
+    const updated = {
+      ...existing,
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
 
-  await kv.set(`articles:${user.id}:${id}`, updated);
-  return c.json({ article: updated });
+    await kv.set(`articles:${user.id}:${id}`, updated);
+    return c.json({ article: updated });
+  } catch {
+    return c.json({ error: 'Could not update article' }, 500);
+  }
 });
 
-// 🔹 Delete article
 app.delete("/make-server-9a7b4805/articles/:id", async (c) => {
   const user = await getAuthenticatedUser(c.req.header("Authorization"));
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const id = c.req.param("id");
-  await kv.del(`articles:${user.id}:${id}`);
-  return c.json({ success: true });
+  try {
+    const id = c.req.param("id");
+    await kv.del(`articles:${user.id}:${id}`);
+    return c.json({ success: true });
+  } catch {
+    return c.json({ error: 'Could not delete article' }, 500);
+  }
 });
 
 Deno.serve(app.fetch);
