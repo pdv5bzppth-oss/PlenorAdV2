@@ -17,7 +17,8 @@ function figmaAssetResolver() {
 
 const githubRepo = process.env.GITHUB_REPOSITORY?.split('/')[1]
 const configuredBase = process.env.VITE_BASE_PATH
-const base = configuredBase || (githubRepo ? `/${githubRepo}/` : '/')
+const isGithubUserPage = githubRepo?.endsWith('.github.io')
+const base = configuredBase || (githubRepo && !isGithubUserPage ? `/${githubRepo}/` : '/')
 
 export default defineConfig({
   base,
